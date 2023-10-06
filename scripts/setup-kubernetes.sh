@@ -3,30 +3,42 @@ set -eux
 
 ON_MASTER_NODE=${ON_MASTER_NODE:-}
 
-# pin docker_version;
-# make pin priority high so that it even survives dist-upgrades
-echo "
-Package: docker-ce
-Pin: version ${DOCKER_VERSION}.*
-Pin-Priority: 1000
-" >/etc/apt/preferences.d/docker-ce
+# make kernel modules loading at reboot
+cat <<EOF | tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
 
-# tell kubernetes that we use an external cloud-provider whatever this means
+# activate kernel modules NOW
+modprobe overlay
+modprobe br_netfilter
+
+# verify that they exist
+lsmod | grep br_netfilter
+lsmod | grep overlay
+
+# tell kubernetes that we use an external cloud-provider, that is,
+# let it use the one from Hetzner;
+# CCM acts as interim layer to let K8s use Hetzner's functionalities
 mkdir -p /etc/systemd/system/kubelet.service.d
 echo 'Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external"
 ' > /etc/systemd/system/kubelet.service.d/20-hetzner-cloud.conf
 
-# install containerd (first getting the service, moving it and even reloading it? strange order?)
-wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
-mv containerd.service /usr/lib/systemd/system/
-systemctl daemon-reload
-
+# install containerd
 ARCH=$(dpkg --print-architecture)
 wget https://github.com/containerd/containerd/releases/download/v1.6.2/containerd-1.6.2-linux-${ARCH}.tar.gz
 tar Czxvf /usr/local containerd-1.6.2-linux-${ARCH}.tar.gz
+wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+mv containerd.service /usr/lib/systemd/system/
+systemctl daemon-reload
 systemctl enable --now containerd
 
-# install run
+# install runc, which seems to be needed for actually running the containers,
+# although it seems containers still run but cgroup via systemd only works via runc (?);
+# cgroups say which resources are allocated to processes
+# "online" also says that CRI-O (container runtime interface to run OCI (open container interface
+# which is what Kubernetes uses)) does "definitely" not work without runc;
+# see also CRI-O docs, especially architecture: https://cri-o.io/
 wget https://github.com/opencontainers/runc/releases/download/v1.1.6/runc.${ARCH}
 install -m 755 runc.${ARCH} /usr/local/sbin/runc
 
@@ -55,21 +67,10 @@ Pin-Priority: 1000
 # and finally
 apt-get install -y kubeadm kubectl kubelet
 
-cat <<EOF | tee /etc/modules-load.d/k8s.conf
-overlay
-br_netfilter
-EOF
-
-modprobe overlay
-modprobe br_netfilter
-
-# verify that they exist
-lsmod | grep br_netfilter
-lsmod | grep overlay
-
 cat <<EOF | tee /etc/sysctl.d/k8s.conf
 # Allow IP forwarding for kubernetes
 net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
 net.ipv4.ip_forward                = 1
 net.ipv6.conf.default.forwarding   = 1
 EOF
@@ -111,6 +112,7 @@ if [[ -n $ON_MASTER_NODE ]] ;then
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
     export KUBECONFIG=/etc/kubernetes/admin.conf
+
 
     kubectl get nodes
 
