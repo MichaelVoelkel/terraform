@@ -23,7 +23,7 @@ lsmod | grep overlay
 mkdir -p /etc/systemd/system/kubelet.service.d
 echo '[Service]
 Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external"
-Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf --cgroup-driver=cgroupfs"
+Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf --cgroup-driver=systemd"
 Environment="KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manifests"
 Environment="KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/net.d --cni-bin-dir=/opt/cni/bin"
 Environment="KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.local --resolv-conf=/run/systemd/resolve/resolv.conf"
@@ -38,6 +38,11 @@ wget https://github.com/containerd/containerd/releases/download/v1.6.2/container
 tar Czxvf /usr/local containerd-1.6.2-linux-${ARCH}.tar.gz
 wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
 mv containerd.service /usr/lib/systemd/system/
+
+mkdir -p /etc/containerd
+containerd config default > /etc/containerd/config.toml
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+
 systemctl daemon-reload
 systemctl enable --now containerd
 
@@ -56,7 +61,7 @@ mkdir -p /opt/cni/bin
 tar Czxvf /opt/cni/bin cni-plugins-linux-$ARCH-v1.2.0.tgz
 
 #echo "MV: systemcgroup"
-#cat /etc/containerd/config.toml
+cat /etc/containerd/config.toml
 
 # Install K8s
 curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
