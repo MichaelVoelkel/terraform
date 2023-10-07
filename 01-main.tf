@@ -9,7 +9,14 @@ resource "hcloud_ssh_key" "k8s_admin_key" {
 
 resource "hcloud_network" "network" {
     name = "kubenet"
-    ip_range = "10.20.0.0/16"
+    ip_range = "10.88.0.0/16"
+}
+
+resource "hcloud_network_subnet" "kubenet" {
+  network_id = hcloud_network.network.id
+  type = "server"
+  network_zone = "eu-central"
+  ip_range   = "10.88.0.0/16"
 }
 
 resource "hcloud_server" "master" {

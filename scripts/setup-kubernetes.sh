@@ -21,7 +21,15 @@ lsmod | grep overlay
 # let it use the one from Hetzner;
 # CCM acts as interim layer to let K8s use Hetzner's functionalities
 mkdir -p /etc/systemd/system/kubelet.service.d
-echo 'Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external"
+echo '[Service]
+Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external"
+Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf --cgroup-driver=cgroupfs"
+Environment="KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manifests"
+Environment="KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/net.d --cni-bin-dir=/opt/cni/bin"
+Environment="KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.local --resolv-conf=/run/systemd/resolve/resolv.conf"
+Environment="KUBELET_AUTHZ_ARGS=--anonymous-auth=false --authentication-token-webhook --authorization-mode=Webhook --client-ca-file=/etc/kubernetes/pki/ca.crt"
+Environment="KUBELET_CERTIFICATE_ARGS=--rotate-certificates=true --cert-dir=/var/lib/kubelet/pki"
+
 ' > /etc/systemd/system/kubelet.service.d/20-hetzner-cloud.conf
 
 # install containerd
@@ -42,7 +50,13 @@ systemctl enable --now containerd
 wget https://github.com/opencontainers/runc/releases/download/v1.1.6/runc.${ARCH}
 install -m 755 runc.${ARCH} /usr/local/sbin/runc
 
-# TBD: we'd need to install CNI tools probably for having some stuff that K8s needs? Let's try to omit to learn
+# install CNI tools
+wget https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-$ARCH-v1.2.0.tgz
+mkdir -p /opt/cni/bin
+tar Czxvf /opt/cni/bin cni-plugins-linux-$ARCH-v1.2.0.tgz
+
+#echo "MV: systemcgroup"
+#cat /etc/containerd/config.toml
 
 # Install K8s
 curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
@@ -94,6 +108,8 @@ if [[ -n $ON_MASTER_NODE ]] ;then
         --apiserver-cert-extra-sans 10.0.0.1 \
         --skip-phases=addon/kube-proxy # apparently needed on ubuntu22 to postpone to later
 
+    ls /var/lib/kubelet/config.yaml || true
+
     ip addr
     IP=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 
@@ -103,6 +119,7 @@ if [[ -n $ON_MASTER_NODE ]] ;then
     #    --control-plane-endpoint="127.0.0.1:6443" \
     #    --pod-network-cidr="10.244.0.0/16"
 
+    ls /var/lib/kubelet/config.yaml || true
     ctr ns ls
 
     ctr -n k8s.io containers list
@@ -113,12 +130,14 @@ if [[ -n $ON_MASTER_NODE ]] ;then
 
     export KUBECONFIG=/etc/kubernetes/admin.conf
 
+    cat $KUBECONFIG
 
     kubectl get nodes
-
     kubectl config view
+    
+    lsof -iTCP -sTCP:LISTEN
 
-    kubectl cluster-info dump
+    #kubectl cluster-info dump
 
     if [[ -n $HCLOUD_TOKEN ]]; then
         echo "Token is set."
@@ -148,7 +167,7 @@ stringData:
 EOF
 
     # cloud controller manager, whatever it may do
-    kubectl apply -f https://raw.githubusercontent.com/hetznercloud/hcloud-cloud-controller-manager/master/deploy/ccm-networks.yaml
+    kubectl apply -f https://raw.githubusercontent.com/hetznercloud/hcloud-cloud-controller-manager/master/deploy/ccm-networks.yaml -v=10
     
     # flannel (which is like calico or cicero or...)
     kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
@@ -157,13 +176,13 @@ EOF
     # the cluster critical pods need to be patched to tolerate these
     kubectl -n kube-flannel patch ds kube-flannel-ds \
         --type json -p \
-        '[{"op":"add","path":"/spec/template/spec/tolerations/-",' \
-        '"value":{"key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true","effect":"NoSchedule"}}]'
+        '[{"op":"add","path":"/spec/template/spec/tolerations/-",
+        "value":{"key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true","effect":"NoSchedule"}}]'
 
     kubectl -n kube-system patch deployment coredns \
         --type json -p \
-        '[{"op":"add","path":"/spec/template/spec/tolerations/-",' \
-        '"value":{"key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true","effect":"NoSchedule"}}]'
+        '[{"op":"add","path":"/spec/template/spec/tolerations/-",
+        "value":{"key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true","effect":"NoSchedule"}}]'
 
     # taints explained: https://community.hetzner.com/tutorials/install-kubernetes-cluster
 
