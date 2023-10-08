@@ -1,6 +1,9 @@
 #!/bin/bash
 set -eux
 
+echo "MV: 0 "
+cat /run/systemd/resolve/resolv.conf
+
 ON_MASTER_NODE=${ON_MASTER_NODE:-}
 
 # make kernel modules loading at reboot
@@ -26,11 +29,15 @@ Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external"
 Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf --cgroup-driver=systemd"
 Environment="KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manifests"
 Environment="KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/net.d --cni-bin-dir=/opt/cni/bin"
-Environment="KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.local --resolv-conf=/run/systemd/resolve/resolv.conf"
+#Environment="KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.local --resolv-conf=/etc/resolv-static.conf"
+Environment="KUBELET_DNS_ARGS=--resolv-conf=/etc/resolv-static.conf"
 Environment="KUBELET_AUTHZ_ARGS=--anonymous-auth=false --authentication-token-webhook --authorization-mode=Webhook --client-ca-file=/etc/kubernetes/pki/ca.crt"
 Environment="KUBELET_CERTIFICATE_ARGS=--rotate-certificates=true --cert-dir=/var/lib/kubelet/pki"
 
 ' > /etc/systemd/system/kubelet.service.d/20-hetzner-cloud.conf
+
+echo "MV: 1 "
+cat /run/systemd/resolve/resolv.conf
 
 # install containerd
 ARCH=$(dpkg --print-architecture)
@@ -46,6 +53,9 @@ sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.t
 systemctl daemon-reload
 systemctl enable --now containerd
 
+echo "MV: 2 "
+cat /run/systemd/resolve/resolv.conf
+
 # install runc, which seems to be needed for actually running the containers,
 # although it seems containers still run but cgroup via systemd only works via runc (?);
 # cgroups say which resources are allocated to processes
@@ -56,9 +66,9 @@ wget https://github.com/opencontainers/runc/releases/download/v1.1.6/runc.${ARCH
 install -m 755 runc.${ARCH} /usr/local/sbin/runc
 
 # install CNI tools
-wget https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-$ARCH-v1.2.0.tgz
-mkdir -p /opt/cni/bin
-tar Czxvf /opt/cni/bin cni-plugins-linux-$ARCH-v1.2.0.tgz
+#wget https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-$ARCH-v1.2.0.tgz
+#mkdir -p /opt/cni/bin
+#tar Czxvf /opt/cni/bin cni-plugins-linux-$ARCH-v1.2.0.tgz
 
 #echo "MV: systemcgroup"
 cat /etc/containerd/config.toml
@@ -97,6 +107,9 @@ EOF
 # load settings from all configuration files
 sysctl --system
 
+echo "MV: 3 "
+cat /run/systemd/resolve/resolv.conf
+
 echo "MV: sysctl --system"
 
 if [[ -n $ON_MASTER_NODE ]] ;then
@@ -113,21 +126,18 @@ if [[ -n $ON_MASTER_NODE ]] ;then
         --apiserver-cert-extra-sans 10.0.0.1 \
         --skip-phases=addon/kube-proxy # apparently needed on ubuntu22 to postpone to later
 
-    ls /var/lib/kubelet/config.yaml || true
-
     ip addr
     IP=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 
     # TBD: IP should work as control-plane-endpoint but does not seem like it, so we use
     # localhost, but this should be strange enough
-    #kubeadm init phase addon kube-proxy \
-    #    --control-plane-endpoint="127.0.0.1:6443" \
-    #    --pod-network-cidr="10.244.0.0/16"
+    kubeadm init phase addon kube-proxy \
+        --control-plane-endpoint="$IP:6443" \
+        --pod-network-cidr="10.244.0.0/16"
 
     ls /var/lib/kubelet/config.yaml || true
-    ctr ns ls
 
-    ctr -n k8s.io containers list
+    kubeadm token create --print-join-command > /tmp/kubeadm_join    
 
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
@@ -138,11 +148,15 @@ if [[ -n $ON_MASTER_NODE ]] ;then
     cat $KUBECONFIG
 
     kubectl get nodes
+    kubectl get pods
     kubectl config view
+
+    cat /run/systemd/resolve/resolv.conf
+    cat /etc/resolv.conf
     
     lsof -iTCP -sTCP:LISTEN
 
-    #kubectl cluster-info dump
+    kubectl cluster-info dump
 
     if [[ -n $HCLOUD_TOKEN ]]; then
         echo "Token is set."

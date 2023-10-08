@@ -89,9 +89,35 @@ resource "null_resource" "setup_master" {
     provisioner "remote-exec" {
         inline = ["HCLOUD_TOKEN=${var.hcloud_token} NETWORK_ID=${hcloud_network.network.id} ON_MASTER_NODE=1 DOCKER_VERSION=${var.docker_version} KUBERNETES_VERSION=${var.kubernetes_version} bash /root/setup-kubernetes.sh"]
     }
+
+    provisioner "local-exec" {
+        command = "scripts/scp-from-node.sh"
+        environment = {
+            SSH_PRIVATE_KEY = var.ssh_private_key_filepath
+            SSH_USERNAME = "root"
+            SSH_PORT = var.ssh_port
+            SSH_HOST = hcloud_server.master[0].ipv4_address
+            TARGET = "${path.module}/secrets/"
+            REMOTE_FILE_PATH = "/etc/kubernetes/admin.conf"
+        }
+    }
+
+    provisioner "local-exec" {
+        command = "scripts/scp-from-node.sh"
+        environment = {
+            SSH_PRIVATE_KEY = var.ssh_private_key_filepath
+            SSH_USERNAME = "root"
+            SSH_PORT = var.ssh_port
+            SSH_HOST = hcloud_server.master[0].ipv4_address
+            TARGET = "${path.module}/secrets/"
+            REMOTE_FILE_PATH = "/tmp/kubeadm_join"
+        }
+    }
 }
 
 resource "null_resource" "setup_worker" {
+    depends_on = [null_resource.setup_master]
+
     count = var.worker_node_count
 
     connection {
@@ -108,6 +134,15 @@ resource "null_resource" "setup_worker" {
 
     provisioner "remote-exec" {
         inline = ["DOCKER_VERSION=${var.docker_version} KUBERNETES_VERSION=${var.kubernetes_version} bash /root/setup-kubernetes.sh"]
+    }
+
+    provisioner "file" {
+        source = "secrets/kubeadm_join"
+        destination = "/root/kubeadm_join"
+    }
+
+    provisioner "remote-exec" {
+        inline = ["bash /root/kubeadm_join"]
     }
 }
 
