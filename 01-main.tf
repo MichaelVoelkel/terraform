@@ -67,13 +67,26 @@ resource "hcloud_server" "worker" {
     }
 }
 
+resource "hcloud_server_network" "master_network" {
+  count       = var.master_node_count
+  depends_on  = [hcloud_server.master]
+  server_id = hcloud_server.master[count.index].id
+  network_id = hcloud_network.network.id
+}
+
+resource "hcloud_server_network" "node_network" {
+  count       = var.worker_node_count
+  depends_on  = [hcloud_server.worker]
+  server_id = hcloud_server.worker[count.index].id
+  network_id = hcloud_network.network.id
+}
+
 resource "null_resource" "setup_master" {
     depends_on = [ hcloud_network.network ]
 
     # well, more master nodes would not work actually because we
     # run "too much" on all masters
     count = var.master_node_count
-
     connection {
         host = hcloud_server.master[count.index].ipv4_address
         type = "ssh"
@@ -87,7 +100,7 @@ resource "null_resource" "setup_master" {
     }
 
     provisioner "remote-exec" {
-        inline = ["HCLOUD_TOKEN=${var.hcloud_token} NETWORK_ID=${hcloud_network.network.id} ON_MASTER_NODE=1 DOCKER_VERSION=${var.docker_version} KUBERNETES_VERSION=${var.kubernetes_version} bash /root/setup-kubernetes.sh"]
+        inline = ["ON_MASTER_NODE=1 DOCKER_VERSION=${var.docker_version} KUBERNETES_VERSION=${var.kubernetes_version} bash /root/setup-kubernetes.sh"]
     }
 
     provisioner "local-exec" {
@@ -164,4 +177,24 @@ resource "hcloud_load_balancer_target" "lb_target" {
     load_balancer_id = hcloud_load_balancer.lb.id
     type = "server"
     server_id = hcloud_server.worker[count.index].id
+}
+
+resource "null_resource" "post_join_master_setup" {
+    depends_on = [ null_resource.setup_worker ]
+
+    connection {
+        host = hcloud_server.master[0].ipv4_address
+        type = "ssh"
+        private_key = file(var.ssh_private_key_filepath)
+        port = var.ssh_port
+    }
+
+    provisioner "file" {
+        source = "scripts/post-join-setup.sh"
+        destination = "/root/post-join-setup.sh"
+    }
+
+    provisioner "remote-exec" {
+        inline = ["HCLOUD_TOKEN=${var.hcloud_token} NETWORK_ID=${hcloud_network.network.id} bash /root/post-join-setup.sh"]
+    }
 }

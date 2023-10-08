@@ -25,14 +25,17 @@ lsmod | grep overlay
 # CCM acts as interim layer to let K8s use Hetzner's functionalities
 mkdir -p /etc/systemd/system/kubelet.service.d
 echo '[Service]
-Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external"
+Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external --resolv-conf=/run/systemd/resolve/resolv.conf"
 Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf --cgroup-driver=systemd"
-Environment="KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manifests"
-Environment="KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/net.d --cni-bin-dir=/opt/cni/bin"
+#Environment="KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manifests"
+#Environment="KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/net.d --cni-bin-dir=/opt/cni/bin"
 #Environment="KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.local --resolv-conf=/etc/resolv-static.conf"
-Environment="KUBELET_DNS_ARGS=--resolv-conf=/etc/resolv-static.conf"
-Environment="KUBELET_AUTHZ_ARGS=--anonymous-auth=false --authentication-token-webhook --authorization-mode=Webhook --client-ca-file=/etc/kubernetes/pki/ca.crt"
-Environment="KUBELET_CERTIFICATE_ARGS=--rotate-certificates=true --cert-dir=/var/lib/kubelet/pki"
+#Environment="KUBELET_DNS_ARGS=--resolv-conf=/etc/resolv-static.conf"
+#Environment="KUBELET_AUTHZ_ARGS=--anonymous-auth=false --authentication-token-webhook --authorization-mode=Webhook --client-ca-file=/etc/kubernetes/pki/ca.crt"
+#Environment="KUBELET_CERTIFICATE_ARGS=--rotate-certificates=true --cert-dir=/var/lib/kubelet/pki"
+
+# NOTE: TBD: not all above is actually used by the executor of kubelet, e.g. KUBELET_DNS_ARGS is not
+# only valued args are: $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
 
 ' > /etc/systemd/system/kubelet.service.d/20-hetzner-cloud.conf
 
@@ -66,9 +69,9 @@ wget https://github.com/opencontainers/runc/releases/download/v1.1.6/runc.${ARCH
 install -m 755 runc.${ARCH} /usr/local/sbin/runc
 
 # install CNI tools
-#wget https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-$ARCH-v1.2.0.tgz
-#mkdir -p /opt/cni/bin
-#tar Czxvf /opt/cni/bin cni-plugins-linux-$ARCH-v1.2.0.tgz
+wget https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-$ARCH-v1.2.0.tgz
+mkdir -p /opt/cni/bin
+tar Czxvf /opt/cni/bin cni-plugins-linux-$ARCH-v1.2.0.tgz
 
 #echo "MV: systemcgroup"
 cat /etc/containerd/config.toml
@@ -124,6 +127,7 @@ if [[ -n $ON_MASTER_NODE ]] ;then
         --ignore-preflight-errors=NumCPU \
         --upload-certs \
         --apiserver-cert-extra-sans 10.0.0.1 \
+        --v=10 \
         --skip-phases=addon/kube-proxy # apparently needed on ubuntu22 to postpone to later
 
     ip addr
@@ -142,73 +146,4 @@ if [[ -n $ON_MASTER_NODE ]] ;then
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
-    export KUBECONFIG=/etc/kubernetes/admin.conf
-
-    cat $KUBECONFIG
-
-    kubectl get nodes
-    kubectl get pods
-    kubectl config view
-
-    cat /run/systemd/resolve/resolv.conf
-    cat /etc/resolv.conf
-    
-    lsof -iTCP -sTCP:LISTEN
-
-    kubectl cluster-info dump
-
-    if [[ -n $HCLOUD_TOKEN ]]; then
-        echo "Token is set."
-    else
-        echo "Token is not set."
-    fi
-
-    echo "Network ID is $NETWORK_ID"
-    
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: hcloud
-  namespace: kube-system
-stringData:
-  token: "$HCLOUD_TOKEN"
-  network: "$NETWORK_ID"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: hcloud-csi
-  namespace: kube-system
-stringData:
-  token: "$HCLOUD_TOKEN"
-EOF
-
-    # cloud controller manager, whatever it may do
-    kubectl apply -f https://raw.githubusercontent.com/hetznercloud/hcloud-cloud-controller-manager/master/deploy/ccm-networks.yaml -v=10
-    
-    # flannel (which is like calico or cicero or...)
-    kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
-
-    # As Kubernetes with the external cloud provider flag activated will add a taint to uninitialized nodes,
-    # the cluster critical pods need to be patched to tolerate these
-    kubectl -n kube-flannel patch ds kube-flannel-ds \
-        --type json -p \
-        '[{"op":"add","path":"/spec/template/spec/tolerations/-",
-        "value":{"key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true","effect":"NoSchedule"}}]'
-
-    kubectl -n kube-system patch deployment coredns \
-        --type json -p \
-        '[{"op":"add","path":"/spec/template/spec/tolerations/-",
-        "value":{"key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true","effect":"NoSchedule"}}]'
-
-    # taints explained: https://community.hetzner.com/tutorials/install-kubernetes-cluster
-
-    # Hetzner container storage interface
-    kubectl apply -f https://raw.githubusercontent.com/hetznercloud/csi-driver/main/deploy/kubernetes/hcloud-csi.yml
-
-    echo "MV: USE THIS"
-    echo ""
-    cat /etc/kubernetes/admin.conf
 fi
